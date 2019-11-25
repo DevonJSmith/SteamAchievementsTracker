@@ -1,41 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'dart:io';
 import 'dart:convert';
 import 'configs.dart';
+import 'package:intl/intl.dart';
 import 'package:http/http.dart' as http;
 
-Future<List<Game>> fetchOwnedGames() async {
-  final response = 
-    await http.get('http://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/?key=${Configs.APIKey}&steamid=${Configs.SteamID}&include_appinfo=1&include_played_free_games=1');
-
-  if(response.statusCode == 200){
-    final responseBody = json.decode(response.body);
-    List<Game> ownedGames = List<Game>();
-    for(final gameJson in responseBody['response']['games']){
-      var tempGame = Game.fromJson(gameJson);
-      
-
-      // get achievements for game
-      final achievementsResponse = await http.get("http://api.steampowered.com/ISteamUserStats/GetPlayerAchievements/v0001/?appid=${tempGame.appid}&key=${Configs.APIKey}&steamid=${Configs.SteamID}");
-      if(achievementsResponse.statusCode == 200){
-        final achievementResponseBody = json.decode(achievementsResponse.body);
-        if(achievementResponseBody.containsKey('playerstats') && achievementResponseBody['playerstats'].containsKey('achievements')){
-          var totalAchievements = (achievementResponseBody['playerstats']['achievements']).length;
-          var totalAchieved = (achievementResponseBody['playerstats']['achievements']).where((a) => a['achieved'].toString() == '1').length;
-          tempGame.totalAchievements = totalAchievements;
-          tempGame.unlockedAchievements = totalAchieved;
-          tempGame.unlockedPercentage = totalAchievements > 0 ? (totalAchieved / totalAchievements * 1.0) : 0.0;
-        }
-      }
-      ownedGames.add(tempGame);
-    }
-    ownedGames.sort((x, y) => y.unlockedPercentage.compareTo(x.unlockedPercentage));
-    return ownedGames.where((x) => x.unlockedPercentage < 1.0).take(10).toList();
-
-  }else{
-    throw Exception('Error making request to Steam API');
-  }
-}
 
 Future<List<Achievement>> fetchAchievementsForGame(int appid) async{
   final response = await http.get('http://api.steampowered.com/ISteamUserStats/GetSchemaForGame/v2/?appid=${appid}&key=${Configs.APIKey}');
@@ -180,7 +151,52 @@ class SteamAchievementState extends State<SteamAchievementsTracker>{
   @override
   final _ownedGames = <dynamic>[];
   final _achievedGames = <String>[];
+  final StreamController<List<Game>> _streamController = new StreamController<List<Game>>();
   
+  bool gamesLoading = true;
+  initState(){
+    fetchOwnedGames();
+  }
+
+ fetchOwnedGames() async {
+  final response = 
+    await http.get('http://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/?key=${Configs.APIKey}&steamid=${Configs.SteamID}&include_appinfo=1&include_played_free_games=1');
+  if(response.statusCode == 200){
+    final responseBody = json.decode(response.body);
+    List<Game> gameList = new List<Game>();
+    for(final gameJson in responseBody['response']['games']){
+      var tempGame = Game.fromJson(gameJson);
+      
+
+      // get achievements for game
+      final achievementsResponse = await http.get("http://api.steampowered.com/ISteamUserStats/GetPlayerAchievements/v0001/?appid=${tempGame.appid}&key=${Configs.APIKey}&steamid=${Configs.SteamID}");
+      if(achievementsResponse.statusCode == 200){
+        final achievementResponseBody = json.decode(achievementsResponse.body);
+        if(achievementResponseBody.containsKey('playerstats') && achievementResponseBody['playerstats'].containsKey('achievements')){
+          var totalAchievements = (achievementResponseBody['playerstats']['achievements']).length;
+          var totalAchieved = (achievementResponseBody['playerstats']['achievements']).where((a) => a['achieved'].toString() == '1').length;
+          tempGame.totalAchievements = totalAchievements;
+          tempGame.unlockedAchievements = totalAchieved;
+          tempGame.unlockedPercentage = totalAchievements > 0 ? (totalAchieved / totalAchievements * 1.0) : 0.0;
+        }
+      }
+      //ownedGames.add(tempGame);
+      gameList.add(tempGame);
+      gameList.sort((x,y) => y.unlockedPercentage.compareTo(x.unlockedPercentage));
+      _streamController.add(gameList);
+    }
+    _streamController.close();
+    setState(() {
+      gamesLoading = false;
+    });
+    //ownedGames.sort((x, y) => y.unlockedPercentage.compareTo(x.unlockedPercentage));
+    //return ownedGames.where((x) => x.unlockedPercentage < 1.0).take(10).toList();
+
+  }else{
+    throw Exception('Error making request to Steam API');
+  }
+}
+
   Widget build(BuildContext context){
     return Scaffold(
       appBar: AppBar(
@@ -189,12 +205,24 @@ class SteamAchievementState extends State<SteamAchievementsTracker>{
           new IconButton(icon: const Icon(Icons.list))
         ],
       ),
-      body: _buildAchievements()
+      body: Stack(children: <Widget>[
+        Visibility(
+          visible: gamesLoading,
+          child: Container(
+            alignment: AlignmentDirectional.center,
+            child: CircularProgressIndicator(backgroundColor: Color(0)),
+          ),
+        ),
+        
+        _buildAchievements()
+      ])
+      // body: _buildAchievements()
     );
   }
   Widget _buildAchievements(){
-    return FutureBuilder<List<Game>>(
-      future: fetchOwnedGames(),
+    // fetchOwnedGames();
+    return StreamBuilder<List<Game>>(
+      stream: _streamController.stream,
       builder: (context, snapshot){
         if(snapshot.hasData){
           return ListView.builder(
@@ -204,7 +232,7 @@ class SteamAchievementState extends State<SteamAchievementsTracker>{
 
               final index = i ~/2;
               if(index < snapshot.data.length){
-              return _buildRow(snapshot.data[index]);
+                return _buildRow(snapshot.data[index]);
               }
             },
           );
@@ -292,7 +320,7 @@ class AchievementDetailState extends StatelessWidget{
     return ListTile(
       leading: achievement.iconURL != null ? Image.network(achievement.iconURL): null,
       title: Text('${achievement.name}'),
-      subtitle: Text('${achievement.description} ${achievement.achieved == 1 ? '\n Unlocked:' + achievement.unlocktime.toString() : ''}'),
+      subtitle: Text('${achievement.description ?? ''} ${achievement.achieved == 1 && achievement.unlocktime > 0 ? (achievement.description != null ? '\n' : '') +  'Unlocked: ' + new DateFormat.yMd().add_jm().format(new DateTime.fromMillisecondsSinceEpoch(achievement.unlocktime * 1000)) : ''}'),
     );
   }
 }
@@ -329,18 +357,20 @@ class Achievement{
   final String apiname;
   int achieved;
   int unlocktime;
+  DateTime unlockDateTime;
   final String name;
   final String description;
   final String iconURL;
   final String iconGrayURL;
 
-  Achievement({this.apiname, this.achieved, this.unlocktime, this.name, this.description, this.iconURL, this.iconGrayURL});
+  Achievement({this.apiname, this.achieved, this.unlocktime, this.unlockDateTime, this.name, this.description, this.iconURL, this.iconGrayURL});
 
   factory Achievement.fromJson(Map<String, dynamic>json){
     return Achievement(
       apiname: json['apiname'] ?? json['name'],
       achieved: json['achieved'],
       unlocktime: json['unlocktime'],
+      unlockDateTime: json.containsKey('unlocktime') ? new DateTime.fromMillisecondsSinceEpoch(json['unlocktime']) : null,
       name: json['displayName'],
       description: json['description'],
       iconURL: json['icon'],
